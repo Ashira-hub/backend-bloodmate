@@ -3,6 +3,10 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
+const path = require('path');
+
+// Enable CORS pre-flight across the board
+app.options('*', cors());
 
 const { Pool } = require('pg');
 
@@ -36,8 +40,35 @@ if (DATABASE_URL) {
 const pool = new Pool(poolConfig);
 
 const app = express();
-app.use(cors());
+
+// Enable CORS for all routes
+app.use((req, res, next) => {
+  // Set CORS headers
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  
+  next();
+});
+
+// Parse JSON bodies
 app.use(express.json({ limit: '1mb' }));
+
+// Log all requests
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`, {
+    headers: req.headers,
+    query: req.query,
+    body: req.body
+  });
+  next();
+});
 
 async function ensureTables() {
   await pool.query(`
@@ -372,9 +403,52 @@ app.post('/api/auth/signin', async (req, res) => {
   }
 });
 
-app.use((err, _req, res, _next) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({ message: 'Unexpected server error.' });
+// Error handling middleware with CORS headers
+app.use((err, req, res, next) => {
+  // Set CORS headers for error responses
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.header('Access-Control-Allow-Credentials', 'true');
+
+  console.error('Error:', {
+    message: err.message,
+    stack: process.env.NODE_ENV === 'production' ? '🔒' : err.stack,
+    path: req.path,
+    method: req.method,
+    body: req.body,
+    params: req.params
+  });
+
+  // Handle CORS errors
+  if (err.name === 'UnauthorizedError') {
+    return res.status(401).json({ 
+      success: false,
+      message: 'Invalid or missing authentication token.'
+    });
+  }
+
+  // Handle validation errors
+  if (err.name === 'ValidationError') {
+    return res.status(400).json({
+      success: false,
+      message: 'Validation failed',
+      errors: err.errors
+    });
+  }
+
+  // Handle CORS preflight
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
+  // Handle other errors
+  res.status(err.status || 500).json({
+    success: false,
+    message: process.env.NODE_ENV === 'production' 
+      ? 'An unexpected error occurred.' 
+      : err.message || 'Unexpected server error.'
+  });
 });
 
 async function start() {
